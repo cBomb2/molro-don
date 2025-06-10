@@ -1,251 +1,144 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8" />
-  <title>Project Tracker</title>
+  <title>Task Tracker Client</title>
   <style>
-    body { font-family: sans-serif; max-width: 800px; margin: auto; padding: 20px; }
+    body { font-family: Arial, sans-serif; padding: 20px; }
     .hidden { display: none; }
-    .task { margin: 5px 0; }
-    progress { width: 100%; height: 20px; }
-    .tasklist { margin-top: 10px; }
-    input, button, select { margin: 5px 0; padding: 5px; }
-    .section { margin-bottom: 30px; border: 1px solid #ccc; padding: 15px; border-radius: 10px; }
+    .task { margin-left: 20px; }
   </style>
 </head>
 <body>
-  <h1>Project Tracker</h1>
-
-  <div id="loginSection" class="section">
-  <h2>Login or Register</h2>
-  <input id="usernameInput" placeholder="Username" /><br>
-  <input id="passwordInput" placeholder="Password" type="password" /><br>
-  <select id="roleInput">
-    <option value="user">User</option>
-    <option value="admin">Admin</option>
-  </select><br>
-  <button onclick="login()">Login</button>
-  <button onclick="register()">Register</button>
-</div>
-
-  <div id="adminPanel" class="section hidden">
-    <h2>Admin Panel</h2>
-    <input id="projectName" placeholder="Project name" />
-    <button onclick="createProject()">Create Project</button>
-    <div id="projectsList"></div>
-    <div id="progressSection">
-      <h3>Assigned Users & Progress</h3>
-      <select id="adminProjectSelect" onchange="renderProgressView()">
-        <option value="">Select a project</option>
-      </select>
-      <div id="adminProgressView"></div>
-    </div>
+  <h1>molro don</h1>
+  <div id="login">
+    <input id="username" placeholder="Username">
+    <select id="role">
+      <option value="admin">Admin</option>
+      <option value="user">User</option>
+    </select>
+    <button onclick="login()">Login</button>
   </div>
 
-  <div id="userPanel" class="section hidden">
-    <h2>Your Projects</h2>
-    <select id="projectSelector" onchange="loadUserTasks()"></select>
-    <div id="userTasks" class="tasklist"></div>
-    <progress id="userProgress" value="0" max="100"></progress>
+  <div id="main" class="hidden">
+    <h2 id="welcome"></h2>
+
+    <div id="admin-controls" class="hidden">
+      <h3>Create Project</h3>
+      <input id="projectName" placeholder="Project Name">
+      <button onclick="createProject()">Create</button>
+
+      <h3>Assign Tasks</h3>
+      <select id="projectSelect"></select>
+      <input id="assignee" placeholder="Assign to (username)">
+      <input id="taskList" placeholder="Tasks (comma-separated)">
+      <button onclick="assignTasks()">Assign</button>
+    </div>
+
+    <h3>My Tasks</h3>
+    <div id="myTasks"></div>
   </div>
 
   <script>
-    const projects = JSON.parse(localStorage.getItem("projects") || "{}");
-    let currentUser = "";
-    const users = JSON.parse(localStorage.getItem("users") || "{}");
+    const socket = new WebSocket("ws://localhost:8080");
+    let currentUser = null;
 
-    function saveProjects() {
-      localStorage.setItem("projects", JSON.stringify(projects));
-    }
+    socket.onopen = () => {
+      console.log("Connected to server");
+    };
 
-    function generateCode() {
-      return Math.random().toString(36).substring(2, 8).toUpperCase();
-    }
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      if (msg.type === "login_success") {
+        document.getElementById("login").classList.add("hidden");
+        document.getElementById("main").classList.remove("hidden");
+        document.getElementById("welcome").textContent = `Welcome, ${currentUser.username}`;
+        if (currentUser.role === "admin") {
+          document.getElementById("admin-controls").classList.remove("hidden");
+        }
+        socket.send(JSON.stringify({ type: "get_all" }));
+      } else if (msg.type === "all_data") {
+        renderMyTasks(msg.projects);
+        if (currentUser.role === "admin") {
+          populateProjectSelect(msg.projects);
+        }
+      } else if (["project_created", "tasks_assigned", "progress_updated"].includes(msg.type)) {
+        socket.send(JSON.stringify({ type: "get_all" }));
+      }
+    };
 
     function login() {
-  const user = document.getElementById("usernameInput").value.trim();
-  const pass = document.getElementById("passwordInput").value.trim();
-
-  if (!user || !pass) return alert("Please enter both username and password.");
-  if (!users[user]) return alert("User not found. Please register first.");
-  if (users[user].password !== pass) return alert("Incorrect password.");
-
-  currentUser = user;
-  const role = users[user].role;
-
-  document.getElementById("loginSection").classList.add("hidden");
-
-  if (role === "admin") {
-    document.getElementById("adminPanel").classList.remove("hidden");
-    renderProjectsList();
-    renderProjectSelectForAdmin();
-  }
-  document.getElementById("userPanel").classList.remove("hidden");
-  renderUserProjects();
-}
-
+      const username = document.getElementById("username").value.trim();
+      const role = document.getElementById("role").value;
+      if (!username) return alert("Enter username");
+      currentUser = { username, role };
+      socket.send(JSON.stringify({ type: "login", username, role }));
+    }
 
     function createProject() {
-  const name = document.getElementById("projectName").value.trim();
-  if (!name) return alert("Enter a project name");
-
-  const code = generateCode();
-  projects[code] = {
-    name,
-    tasks: [],
-    assignments: {},
-    createdBy: currentUser  // <- New field
-  };
-  saveProjects();
-  renderProjectsList();
-  renderProjectSelectForAdmin();
-}
-
-    function assignTasks(code, username, tasksStr) {
-      const taskList = tasksStr.split(",").map(t => t.trim()).filter(t => t);
-      projects[code].assignments[username] = {
-        tasks: taskList.map(t => ({ text: t, done: false }))
-      };
-      saveProjects();
+      const name = document.getElementById("projectName").value.trim();
+      if (!name) return alert("Enter project name");
+      socket.send(JSON.stringify({ type: "create_project", name }));
     }
 
-    function renderProjectsList() {
-  const div = document.getElementById("projectsList");
-  div.innerHTML = "";
-
-  for (const code in projects) {
-    const p = projects[code];
-    if (p.createdBy !== currentUser) continue; // <- Filter by admin
-
-    const el = document.createElement("div");
-    el.innerHTML = `
-      <strong>${p.name}</strong> [Code: ${code}]<br>
-      Assign to user: 
-      <input id="user-${code}" placeholder="username" />
-      Tasks (comma-separated):
-      <input id="tasks-${code}" placeholder="e.g. Design, Code, Test" />
-      <button onclick="assign('${code}')">Assign</button>
-    `;
-    div.appendChild(el);
-  }
-}
-
-    function assign(code) {
-      const username = document.getElementById(`user-${code}`).value.trim();
-      const tasks = document.getElementById(`tasks-${code}`).value.trim();
-      if (!username || !tasks) return alert("Fill in both username and tasks");
-      assignTasks(code, username, tasks);
-      alert(`Tasks assigned to ${username} in project ${code}`);
+    function assignTasks() {
+      const code = document.getElementById("projectSelect").value;
+      const user = document.getElementById("assignee").value.trim();
+      const tasks = document.getElementById("taskList").value.split(",").map(t => t.trim()).filter(Boolean);
+      if (!code || !user || !tasks.length) return alert("Fill out all fields");
+      socket.send(JSON.stringify({ type: "assign", code, user, tasks }));
     }
 
-    function renderUserProjects() {
-      const selector = document.getElementById("projectSelector");
-      selector.innerHTML = `<option value="">Select a project</option>`;
-      for (const code in projects) {
-        if (projects[code].assignments[currentUser]) {
-          const option = document.createElement("option");
-          option.value = code;
-          option.textContent = `${projects[code].name} [${code}]`;
-          selector.appendChild(option);
+    function toggleDone(code, tasks) {
+      socket.send(JSON.stringify({
+        type: "update_progress",
+        code,
+        user: currentUser.username,
+        tasks
+      }));
+    }
+
+    function renderMyTasks(projects) {
+      const container = document.getElementById("myTasks");
+      container.innerHTML = "";
+      for (const [code, project] of Object.entries(projects)) {
+        const assignment = project.assignments?.[currentUser.username];
+        if (assignment) {
+          const wrapper = document.createElement("div");
+          wrapper.innerHTML = `<strong>${project.name}</strong> (${code})`;
+
+          assignment.forEach((task, idx) => {
+            const label = document.createElement("label");
+            label.className = "task";
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.checked = task.done;
+            checkbox.onchange = () => {
+              assignment[idx].done = checkbox.checked;
+              toggleDone(code, assignment);
+            };
+            label.appendChild(checkbox);
+            label.appendChild(document.createTextNode(" " + task.text));
+            wrapper.appendChild(label);
+            wrapper.appendChild(document.createElement("br"));
+          });
+
+          container.appendChild(wrapper);
         }
       }
     }
 
-    function loadUserTasks() {
-      const code = document.getElementById("projectSelector").value;
-      if (!code) return;
-
-      const tasks = projects[code].assignments[currentUser].tasks;
-      const container = document.getElementById("userTasks");
-      container.innerHTML = "";
-      tasks.forEach((task, i) => {
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.checked = task.done;
-        checkbox.onchange = () => {
-          task.done = checkbox.checked;
-          saveProjects();
-          updateProgressBar(code);
-        };
-
-        const label = document.createElement("label");
-        label.className = "task";
-        label.appendChild(checkbox);
-        label.appendChild(document.createTextNode(" " + task.text));
-        container.appendChild(label);
-        container.appendChild(document.createElement("br"));
-      });
-
-      updateProgressBar(code);
+    function populateProjectSelect(projects) {
+      const select = document.getElementById("projectSelect");
+      select.innerHTML = "";
+      for (const [code, project] of Object.entries(projects)) {
+        if (project.createdBy === currentUser.username) {
+          const opt = document.createElement("option");
+          opt.value = code;
+          opt.textContent = `${project.name} (${code})`;
+          select.appendChild(opt);
+        }
+      }
     }
-
-    function updateProgressBar(code) {
-      const tasks = projects[code].assignments[currentUser].tasks;
-      const done = tasks.filter(t => t.done).length;
-      const bar = document.getElementById("userProgress");
-      bar.value = tasks.length ? (done / tasks.length) * 100 : 0;
-    }
-    function renderProjectSelectForAdmin() {
-  const select = document.getElementById("adminProjectSelect");
-  select.innerHTML = '<option value="">Select a project</option>';
-
-  for (const code in projects) {
-    const proj = projects[code];
-    if (!proj.createdBy || proj.createdBy !== currentUser) continue;
-
-    const option = document.createElement("option");
-    option.value = code;
-    option.textContent = `${proj.name} [${code}]`;
-    select.appendChild(option);
-  }
-}
-
-function renderProgressView() {
-  const code = document.getElementById("adminProjectSelect").value;
-  const container = document.getElementById("adminProgressView");
-  container.innerHTML = "";
-
-  if (!code) return;
-
-  const proj = projects[code];
-  const assignments = proj.assignments;
-  if (!assignments || Object.keys(assignments).length === 0) {
-    container.textContent = "No users assigned.";
-    return;
-  }
-
-  for (const user in assignments) {
-    const tasks = assignments[user].tasks;
-    const done = tasks.filter(t => t.done).length;
-    const total = tasks.length;
-    const percent = total ? Math.round((done / total) * 100) : 0;
-
-    const div = document.createElement("div");
-    div.innerHTML = `
-      <strong>${user}</strong>: ${done}/${total} tasks completed (${percent}%)
-      <progress value="${percent}" max="100" style="width: 100%"></progress>
-      <ul>${tasks.map(t => `<li style="color: ${t.done ? 'green' : 'gray'}">${t.done ? "✔️" : "❌"} ${t.text}</li>`).join("")}</ul>
-    `;
-    container.appendChild(div);
-    container.appendChild(document.createElement("hr"));
-  }
-}
-function saveUsers() {
-  localStorage.setItem("users", JSON.stringify(users));
-}
-function register() {
-  const user = document.getElementById("usernameInput").value.trim();
-  const pass = document.getElementById("passwordInput").value.trim();
-  const role = document.getElementById("roleInput").value;
-
-  if (!user || !pass) return alert("Please enter both username and password.");
-  if (users[user]) return alert("Username already taken.");
-
-  users[user] = { password: pass, role };
-  saveUsers();
-  alert("Registered! You can now log in.");
-}
-
   </script>
 </body>
 </html>
